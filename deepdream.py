@@ -109,7 +109,7 @@ def tiled_gradient(model,layer, image_tensor, overlap=10, tile_size=400):
     # To avoid visible seams problem which may be due to the smaller image gradients at the edges
     # we will feed extended tiles to the model input
     image_grid, grad_grid = make_grid(image_tensor, tile_size, overlap)
-    #Also we should add padding to image. For smooth result we will use 'reflect' mode.
+    #Also we should add padding to the whole image. For smooth result we will use 'reflect' mode.
     img = torch.nn.functional.pad(image_tensor, [overlap]*4, 'reflect')
 
     for i in range(len(image_grid)):
@@ -119,7 +119,7 @@ def tiled_gradient(model,layer, image_tensor, overlap=10, tile_size=400):
         g = model.get_gradient(layer,tile)
         if overlap != 0:
             g = g[:,:,overlap:-overlap,overlap:-overlap]
-        g /= (g.mean()+ 1e-8)
+        g /= (abs(g.mean())+ 1e-8)
         x_left,x_right,y_top,y_bot = grad_grid[i]
         grad[:,:,x_left:x_right,y_top:y_bot] = g
     return grad/(grad.std()+1e-8)
@@ -127,7 +127,7 @@ def tiled_gradient(model,layer, image_tensor, overlap=10, tile_size=400):
 
 
 def optimize_image(model,layer, image,
-                   num_iterations=10, step_size=3.0, overlap=10, tile_size=400,
+                   num_iterations=10, step_size=3.0, pad=10, tile_size=400,
                    show_gradient=False):
     """
     Use gradient ascent to optimize an image so it maximizes the
@@ -151,7 +151,7 @@ def optimize_image(model,layer, image,
         # Calculate the value of the gradient.
         # This tells us how to change the image so as to
         # maximize the mean of the given layer-tensor.
-        grad = to_numpy(tiled_gradient(model,layer, image_tensor, overlap, tile_size))
+        grad = to_numpy(tiled_gradient(model,layer, image_tensor, pad, tile_size))
         # Blur the gradient with different amounts and add
         # them together. The blur amount is also increased
         # during the optimization. This was found to give
