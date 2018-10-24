@@ -117,11 +117,12 @@ def tiled_gradient(model,layer, image_tensor, overlap=10, tile_size=400):
         tile = img[:,:,x_left:x_right,y_top:y_bot]
         tile.requires_grad = True
         g = model.get_gradient(layer,tile)
+        if overlap != 0:
+            g = g[:,:,overlap:-overlap,overlap:-overlap]
         g /= (g.mean()+ 1e-8)
-        g = g[:,:,overlap:-overlap,overlap:-overlap]
         x_left,x_right,y_top,y_bot = grad_grid[i]
         grad[:,:,x_left:x_right,y_top:y_bot] = g
-    return grad
+    return grad/(grad.std()+1e-8)
 
 
 
