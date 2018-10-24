@@ -10,6 +10,7 @@ from scipy.ndimage.filters import gaussian_filter
 
 
 
+
 def get_gradient(self, layer, x):
     """
     Get gradient of some layer mean by image.
@@ -24,30 +25,20 @@ def get_gradient(self, layer, x):
     loss = activation.mean()
     loss.backward()
     gradient = x.grad.data
+    self.zero_grad()
     x.grad = None
     return gradient
 
 
-def to_tensor(tile, pad, device):
-    #Convert to a torch tensor that can be fed to the input model
-    tile = torch.tensor(tile.transpose([2,0,1]),dtype=torch.float32,device=device)
-    tile = torch.nn.functional.pad(tile.unsqueeze(0), (pad, pad, pad, pad), 'reflect')
-    tile.requires_grad = True
-    return tile
+
+def to_tensor(image,device):
+    return torch.tensor(image.transpose([2,0,1]),dtype=torch.float32,device=device).unsqueeze(0)
 
 
-def to_numpy(grad,pad):
-    #Convert torch tensor of gradient back to a ndarray
-    return (np.squeeze(grad.cpu().numpy())[:,pad:-pad,pad:-pad]).transpose([1,2,0])
 
+def to_numpy(image_tensor):
+    return image_tensor.squeeze().cpu().numpy().transpose([1,2,0])
 
-def plot_image(image):
-    # Ensure the pixel-values are between 0 and 255.
-    image = np.clip(image, 0.0, 255.0)
-    # Convert pixels to bytes.
-    image = image.astype(np.uint8)
-    plt.imshow(image)
-    plt.show()
 
 
 def plot_grad(grad):
@@ -59,103 +50,83 @@ def plot_grad(grad):
     plt.show()
 
 
-def resize_image(image, size=None, factor=None):
-    # If a rescaling-factor is provided then use it.
-    if factor is not None:
-        # Scale the numpy array's shape for height and width.
-        size = np.array(image.shape[0:2]) * factor
-        # The size is floating-point because it was scaled.
-        # PIL requires the size to be integers.
-        size = size.astype(int)
-    else:
-        # Ensure the size has length 2.
-        size = size[0:2]
-    # The height and width is reversed in numpy vs. PIL.
-    size = tuple(reversed(size))
+
+def plot_image(image):
+    if not isinstance(image,np.ndarray):
+        plot_image(to_numpy(image))
+        return
     # Ensure the pixel-values are between 0 and 255.
-    img = np.clip(image, 0.0, 255.0)
-    # Convert the pixels to 8-bit bytes.
-    img = img.astype(np.uint8)
-    # Create PIL-object from numpy array.
-    img = PIL.Image.fromarray(img)
-    # Resize the image.
-    img_resized = img.resize(size, PIL.Image.LANCZOS)
-    # Convert 8-bit pixel values back to floating-point.
-    img_resized = np.float32(img_resized)
-    return img_resized
+    image = np.clip(image, 0.0, 255.0)
+    # Convert pixels to bytes.
+    image = image.astype(np.uint8)
+    plt.imshow(image)
+    plt.show()
 
 
-def get_tile_size(num_pixels, tile_size=500):
+def make_grid(image_tensor, tile_size, overlap):
     """
-    num_pixels is the number of pixels in a dimension of the image.
-    tile_size is the desired tile-size.
+    Make grad grid and image grid with extended tiles.
+    Coordinate system in the case of the grad_grid corresponds to image_tensor
+    but in the case of the image_grid it corresponds to image_tensor with padding=overlap.
     """
+    grad_grid = []
+    image_grid = []
+    n, c, x_max, y_max = image_tensor.shape
+    num_tiles_x, num_tiles_y = int(round(x_max / tile_size)), int(round(y_max / tile_size))
     # How many times can we repeat a tile of the desired size.
-    num_tiles = int(round(num_pixels / tile_size))
     # Ensure that there is at least 1 tile.
-    num_tiles = max(1, num_tiles)
-    # The actual tile-size.
-    actual_tile_size = math.ceil(num_pixels / num_tiles)
-    return actual_tile_size
-
-
-def tiled_gradient(model,layer, image, tile_size=400):
-    pad = 10
-    # Allocate an array for the gradient of the entire image.
-    grad = np.zeros_like(image)
-    # Number of pixels for the x- and y-axes.
-    x_max, y_max, _ = image.shape
-    # Tile-size for the x-axis.
-    x_tile_size = get_tile_size(num_pixels=x_max, tile_size=tile_size)
-    # 1/4 of the tile-size.
-    x_tile_size4 = x_tile_size // 4
-    # Tile-size for the y-axis.
-    y_tile_size = get_tile_size(num_pixels=y_max, tile_size=tile_size)
-    # 1/4 of the tile-size
-    y_tile_size4 = y_tile_size // 4
-    # Random start-position for the tiles on the x-axis.
-    # The random value is between -3/4 and -1/4 of the tile-size.
-    # This is so the border-tiles are at least 1/4 of the tile-size,
+    num_tiles_x, num_tiles_y = max(1, num_tiles_x), max(1,num_tiles_y)
+    # Boundary coordinates
+    xs = np.linspace(0,x_max,num_tiles_x+1,dtype=np.int16)
+    ys = np.linspace(0,y_max,num_tiles_y+1,dtype=np.int16)
+    # Random shifts for the tiles on x,y-axes.
+    # The random value is between -1/4 and 1/4 of the tile-size.
+    # This is so the border-tiles are roughly at least 1/4 of the tile-size,
     # otherwise the tiles may be too small which creates noisy gradients.
-    x_start = random.randint(-3*x_tile_size4, -x_tile_size4)
-    while x_start < x_max:
-        # End-position for the current tile.
-        x_end = x_start + x_tile_size
-        # Ensure the tile's start- and end-positions are valid.
-        x_start_lim = max(x_start, 0)
-        x_end_lim = min(x_end, x_max)
-        # Random start-position for the tiles on the y-axis.
-        # The random value is between -3/4 and -1/4 of the tile-size.
-        y_start = random.randint(-3*y_tile_size4, -y_tile_size4)
-        while y_start < y_max:
-            # End-position for the current tile.
-            y_end = y_start + y_tile_size
-            # Ensure the tile's start- and end-positions are valid.
-            y_start_lim = max(y_start, 0)
-            y_end_lim = min(y_end, y_max)
-            # Get the image-tile.
-            img_tile = image[x_start_lim:x_end_lim,
-                             y_start_lim:y_end_lim, :]
-            # Create a tensor with the image-tile.
-            img = to_tensor(img_tile,pad,model.device)
-            # Use PyTorch to calculate the gradient-value.
-            g = to_numpy(model.get_gradient(layer,img),pad)
-            # Normalize the gradient for the tile. This is
-            # necessary because the tiles may have very different
-            # values. Normalizing gives a more coherent gradient.
-            g /= (np.mean(g) + 1e-8)
-            # Store the tile's gradient at the appropriate location.
-            grad[x_start_lim:x_end_lim,
-                 y_start_lim:y_end_lim, :] = g
-            # Advance the start-position for the y-axis.
-            y_start = y_end
-        # Advance the start-position for the x-axis.
-        x_start = x_end
+    x_shift = random.uniform(-0.75, -0.25)
+    y_shift = random.uniform(-0.75, -0.25)
+    xs = np.append(xs,[2*xs[-1]-xs[-2]]) + int(x_shift*(xs[1]-xs[0]))
+    ys = np.append(ys,[2*ys[-1]-ys[-2]]) + int(y_shift*(ys[1]-ys[0]))
+    # Crop to the image size
+    xs[0], ys[0], xs[-1], ys[-1]  =  0, 0, x_max, y_max
+    for i in range(len(xs)-1):
+        for j in range(len(ys)-1):
+            grad_grid.append((xs[i],xs[i+1],ys[j],ys[j+1]))
+    # Add padding
+    xs += overlap
+    ys += overlap
+    for i in range(len(xs)-1):
+        for j in range(len(ys)-1):
+            image_grid.append((xs[i]-overlap,xs[i+1]+overlap,ys[j]-overlap,ys[j+1]+overlap))
+    return image_grid, grad_grid
+
+
+
+def tiled_gradient(model,layer, image_tensor, overlap=10, tile_size=400):
+    # Allocate an array for the gradient of the entire image.
+    grad = torch.zeros_like(image_tensor)
+    # Make grid
+    # To avoid visible seams problem which may be due to the smaller image gradients at the edges
+    # we will feed extended tiles to the model input
+    image_grid, grad_grid = make_grid(image_tensor, tile_size, overlap)
+    #Also we should add padding to image. For smooth result we will use 'reflect' mode.
+    img = torch.nn.functional.pad(image_tensor, [overlap]*4, 'reflect')
+
+    for i in range(len(image_grid)):
+        x_left,x_right,y_top,y_bot = image_grid[i]
+        tile = img[:,:,x_left:x_right,y_top:y_bot]
+        tile.requires_grad = True
+        g = model.get_gradient(layer,tile)
+        g /= (g.mean()+ 1e-8)
+        g = g[:,:,overlap:-overlap,overlap:-overlap]
+        x_left,x_right,y_top,y_bot = grad_grid[i]
+        grad[:,:,x_left:x_right,y_top:y_bot] = g
     return grad
 
 
+
 def optimize_image(model,layer, image,
-                   num_iterations=10, step_size=3.0, tile_size=400,
+                   num_iterations=10, step_size=3.0, overlap=10, tile_size=400,
                    show_gradient=False):
     """
     Use gradient ascent to optimize an image so it maximizes the
@@ -171,15 +142,15 @@ def optimize_image(model,layer, image,
     show_gradient: Plot the gradient in each iteration.
     """
     # Copy the image so we don't overwrite the original image.
-    img = image.copy()
+    image_tensor = to_tensor(image, model.device)
     print("Image before:")
-    plot_image(image)
+    plot_image(image_tensor)
     print("Processing image: ", end="")
     for i in range(num_iterations):
         # Calculate the value of the gradient.
         # This tells us how to change the image so as to
         # maximize the mean of the given layer-tensor.
-        grad = tiled_gradient(model,layer, img)
+        grad = to_numpy(tiled_gradient(model,layer, image_tensor, overlap, tile_size))
         # Blur the gradient with different amounts and add
         # them together. The blur amount is also increased
         # during the optimization. This was found to give
@@ -200,17 +171,18 @@ def optimize_image(model,layer, image,
         # is already normalized.
         step_size_scaled = step_size / (np.std(grad) + 1e-8)
         # Update the image by following the gradient.
-        img += grad * step_size_scaled
-        plot_image(img)
+
+        image_tensor += to_tensor(grad,model.device) * step_size_scaled
+
         if show_gradient:
             # Print statistics for the gradient.
             msg = "Gradient min: {0:>9.6f}, max: {1:>9.6f}, stepsize: {2:>9.2f}"
             print(msg.format(grad.min(), grad.max(), step_size_scaled))
             # Plot the gradient.
-            plot_gradient(grad)
+            plot_grad(grad)
         else:
             # Otherwise show a little progress-indicator.
             print(". ", end="")
     print("\nImage after:")
-    plot_image(img)
-    return img
+    plot_image(image_tensor)
+    return to_numpy(image_tensor)
