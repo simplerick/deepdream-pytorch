@@ -9,23 +9,32 @@ import PIL.Image
 from scipy.ndimage.filters import gaussian_filter
 
 
+# TODO wrap in class?
 
-# TODO: Use register_forward_hook
-# def get_gradient(self, tensor, x):
-#     """
-#     Get gradient of mean of some tensor object by image.
-#     Important: make sure that list of children of your model gives the desired computational graph!
-#     """
-#     x.grad = None
-#     activation = x
-#     for l in list(self.children())[:-1]:
-#         activation = l(activation)
-#     loss = activation.mean()
-#     loss.backward()
-#     gradient = x.grad.data
-#     self.zero_grad()
-#     x.grad = None
-#     return gradient
+# TODO: think about about early exit from the forward pass
+
+def get_gradient(self, module, loss, x):
+    """
+    Get gradient of scalar function "loss" of some "module" output by image "x".
+    If you get message about size mismatch it doesn't necessarily mean that grad computation failed
+    """
+    # Create hook
+    def h(self,input,output):
+        loss(output).backward()
+    # Clear gradient
+    x.grad = None
+    # Put handle
+    handle = module.register_forward_hook(h)
+    try:
+        self.forward(x)
+    except RuntimeError as err:
+        print(err)
+    gradient = x.grad.detach()
+    # Clear gradients and remove handle
+    handle.remove()
+    self.zero_grad()
+    x.grad = None
+    return gradient
 
 
 
@@ -101,7 +110,7 @@ def make_grid(image_tensor, tile_size, overlap):
 
 
 
-def tiled_gradient(model,tensor, image_tensor, overlap=10, tile_size=400):
+def tiled_gradient(model,module,loss, image_tensor, overlap=10, tile_size=400):
     # Allocate an array for the gradient of the entire image.
     grad = torch.zeros_like(image_tensor)
     # Make grid
@@ -115,7 +124,7 @@ def tiled_gradient(model,tensor, image_tensor, overlap=10, tile_size=400):
         x_left,x_right,y_top,y_bot = image_grid[i]
         tile = img[:,:,x_left:x_right,y_top:y_bot]
         tile.requires_grad = True
-        g = model.get_gradient(tensor,tile)
+        g = model.get_gradient(module=module,loss=loss,x=tile)
         if overlap != 0:
             g = g[:,:,overlap:-overlap,overlap:-overlap]
         g /= (abs(g.mean())+ 1e-8)
@@ -125,7 +134,7 @@ def tiled_gradient(model,tensor, image_tensor, overlap=10, tile_size=400):
 
 
 
-def render_image(model,tensor, image,
+def render_image(model,module,loss, image,
                    iter_n=10, step=3.0, pad=10, tile_size=400,
                    show_gradient=False):
     """
@@ -134,7 +143,7 @@ def render_image(model,tensor, image,
 
     Parameters:
     model: Network model.
-    layer: Reference to a tensor that will be maximized.
+    module: Reference to a module where activations will be maximized.
     image: Input image used as the starting point.
     iter_n: Number of optimization iterations to perform.
     step: Scale for each step of the gradient ascent.
@@ -148,9 +157,8 @@ def render_image(model,tensor, image,
     print("Processing image: ", end="")
     for i in range(iter_n):
         # Calculate the value of the gradient.
-        # This tells us how to change the image so as to
-        # maximize the mean of the given layer-tensor.
-        grad = to_numpy(tiled_gradient(model,tensor, image_tensor, pad, tile_size))
+        # This tells us how to change the image
+        grad = to_numpy(tiled_gradient(model,module, loss,image_tensor, pad, tile_size))
         # Blur the gradient with different amounts and add
         # them together. The blur amount is also increased
         # during the optimization. This was found to give
@@ -207,7 +215,7 @@ def resize_image(image, size=None):
 
 
 
-def render_multiscale(model,tensor, image, octave_n=3, octave_scale=0.7, blend=0.2, iter_n=10, step=1.0, pad=10,tile_size=400):
+def render_multiscale(model,module, loss, image, octave_n=3, octave_scale=0.7, blend=0.2, iter_n=10, step=1.0, pad=10,tile_size=400):
     # octaves contains downscaled versions of the original image
     octaves = [image.copy()]
     for _ in range(octave_n-1):
@@ -221,5 +229,5 @@ def render_multiscale(model,tensor, image, octave_n=3, octave_scale=0.7, blend=0
             img_orig = octaves[-octave]
             img = resize_image(image=img,size=img_orig.shape[:2])
             img = blend * img + (1.0 - blend) * img_orig
-        img = render_image(model,tensor,img,iter_n, step, pad, tile_size)
+        img = render_image(model,module,loss,img,iter_n, step, pad, tile_size)
     return img
