@@ -1,58 +1,38 @@
 from torchvision import transforms
 import matplotlib.pyplot as plt
-from scipy.misc import imresize
 import numpy as np
 import torch
 import math
 import random
 import PIL.Image
+from PIL.ImageFilter import GaussianBlur
+from PIL import ImageChops
 from scipy.ndimage.filters import gaussian_filter
 
 
-
 def to_tensor(image,device):
-    return torch.tensor(image.transpose([2,0,1]),dtype=torch.float32,device=device).unsqueeze(0)
+    return transforms.ToTensor()(image).unsqueeze(0).to(device)
 
-
-def to_numpy(image_tensor):
-    return image_tensor.squeeze().cpu().numpy().transpose([1,2,0])
+def to_pil(image_tensor):
+    image = image_tensor.cpu().squeeze()
+    return transforms.ToPILImage()(image)
 
 
 def plot_grad(grad):
-    g_min = grad.min()
-    g_max = grad.max()
-    grad_normalized = (grad-g_min)/(g_max-g_min)
+    # g_min = grad.min()
+    # g_max = grad.max()
+    # grad_normalized = (grad-g_min)/(g_max-g_min)
+    grad_normalized = (grad - grad.mean())/grad.std()*0.4+0.5
     # Plot the normalized gradient.
     plt.imshow(grad_normalized, interpolation='bilinear')
     plt.show()
 
 
-def plot_image(image):
-    if not isinstance(image,np.ndarray):
-        plot_image(to_numpy(image))
-        return
-    # Ensure the pixel-values are between 0 and 255.
-    image = np.clip(image, 0.0, 255.0)
-    # Convert pixels to bytes.
-    image = image.astype(np.uint8)
-    plt.imshow(image)
-    plt.show()
-
-
 def resize_image(image, size=None):
-    # Size = H,W,...
-    # The height and width is reversed in numpy vs. PIL.
-    # Ensure the size dtype is int
-    size = int(size[1]),int(size[0])
-    img = np.clip(image, 0.0, 255.0)
-    # Convert the pixels to 8-bit bytes.
-    img = img.astype(np.uint8)
-    # Create PIL-object from numpy array.
-    img = PIL.Image.fromarray(img)
+    size = int(size[0]),int(size[1])
     # Resize the image.
-    img_resized = img.resize(size, PIL.Image.LANCZOS)
+    img_resized = image.resize(size, PIL.Image.LANCZOS)
     # Convert 8-bit pixel values back to floating-point.
-    img_resized = np.float32(img_resized)
     return img_resized
 
 
@@ -113,6 +93,7 @@ class DeepDream():
         """
         Get gradient of scalar function "loss" of some "module" output by image "x".
         If you get message about size mismatch it doesn't necessarily mean that grad computation failed
+        It will be a problem only if size mismatch happens before target module.
         """
         # Create hook
         loss = self.loss
@@ -120,13 +101,15 @@ class DeepDream():
             loss(output).backward()
         # Clear gradient
         x.grad = None
+        error = None
         # Put handle
         handle = self.module.register_forward_hook(h)
         try:
             self.model(x)
         except RuntimeError as err:
-            pass
-            # print(err)
+            error = err
+        if x.grad is None: #if x.grad wasn't computed by some reason
+            raise error
         gradient = x.grad.detach()
         # Clear gradients and remove handle
         handle.remove()
@@ -152,13 +135,13 @@ class DeepDream():
             g = self.get_gradient(tile)
             if overlap != 0:
                 g = g[:,:,overlap:-overlap,overlap:-overlap]
-            g /= (abs(g.mean())+ 1e-8)
+            g /= (g.std()+1e-8)
             x_left,x_right,y_top,y_bot = grad_grid[i]
             grad[:,:,x_left:x_right,y_top:y_bot] = g
         return grad/(grad.std()+1e-8)
 
 
-    def render_image(self, image,iter_n=10, step=3.0, pad=10, tile_size=400,show_gradient=False,show_images=True):
+    def render_image(self, image_tensor, sigma, iter_n=10, step=0.05, pad=10, tile_size=400,show_gradient=False,show_images=False):
         """
         Use gradient ascent to optimize an image so it maximizes the
         mean value of the given layer_tensor.
@@ -171,51 +154,46 @@ class DeepDream():
         show_gradient: Plot the gradient in each iteration.
         """
         # Copy the image so we don't overwrite the original image.
-        image_tensor = to_tensor(image, self.device)
+        # image_tensor = to_tensor(image, self.device)
         print("Processing image: ", end="")
         for i in range(iter_n):
             # Calculate the value of the gradient.
-            # This tells us how to change the image
-            grad = to_numpy(self.tiled_gradient(image_tensor, pad, tile_size))
-            # Blur the gradient with different amounts and add
-            # them together.
-            sigma = (i * 4.0) / iter_n + 0.5
-            grad_smooth1 = gaussian_filter(grad, sigma=sigma)
-            grad_smooth2 = gaussian_filter(grad, sigma=sigma*2)
-            grad_smooth3 = gaussian_filter(grad, sigma=sigma*0.5)
-            grad = (grad_smooth1 + grad_smooth2 + grad_smooth3)
-            # Scale the step-size according to the gradient-values.
-            # This may not be necessary because the tiled-gradient
-            # is already normalized.
-            step_scaled = step / (np.std(grad) + 1e-8)
+            grad = self.tiled_gradient(image_tensor, pad, tile_size)
+            np_grad = grad.cpu().numpy()
+            sigma_i = (i*sigma)/iter_n+sigma
+            np_grad = gaussian_filter(np_grad, sigma=sigma_i)+gaussian_filter(np_grad, sigma=2*sigma_i)
+            grad = torch.tensor(np_grad, device=self.device)
             # Update the image by following the gradient.
-            image_tensor += to_tensor(grad,self.device) * step_scaled
+            image_tensor += grad * step
+            image_tensor = torch.clamp(image_tensor,0.0,1.0)
             if show_gradient:
                 # Print statistics for the gradient.
-                msg = "Gradient min: {0:>9.6f}, max: {1:>9.6f}, stepsize: {2:>9.2f}"
-                print(msg.format(grad.min(), grad.max(), step_scaled))
-                plot_grad(grad)
+                msg = "Gradient min: {0:>9.6f}, max: {1:>9.6f}"
+                print(msg.format(np_grad.min(), np_grad.max()))
+                plot_grad(np_grad.squeeze().transpose(1,2,0))
             else:
                 print(". ", end="")
         if show_images:
-            print("\nImage after:")
-            plot_image(image_tensor)
-        return to_numpy(image_tensor)
+            pil_image = to_pil(image_tensor)
+            plt.imshow(pil_image)
+            plt.show()
+        return image_tensor
 
 
-    def render_multiscale(self, image, octave_n=3, octave_scale=0.7, blend=0.8, iter_n=10, step=1.0, pad=10,tile_size=400):
+    def render_multiscale(self, image, octave_n=3, octave_scale=0.7, blend=0.1, blur_radius=1, sigma=0.5, iter_n=10, step=0.01, pad=10,tile_size=400):
         # octaves contains downscaled versions of the original image
         octaves = [image.copy()]
         for _ in range(octave_n-1):
-            sigma = 0.5
-            img_blur = gaussian_filter(octaves[-1], sigma=(sigma, sigma, 0.0))
-            img = resize_image(image=img_blur,size=np.int32(np.float32(img_blur.shape[:2])*octave_scale))
+            img_blur = octaves[-1].filter(GaussianBlur(blur_radius))
+            img = resize_image(image=img_blur,size=np.int32(np.float32(img_blur.size)*octave_scale))
             octaves.append(img)
         # generate details; at this step img is smallest octave
         for octave in range(octave_n):
             if octave>0:
                 img_orig = octaves[-octave]
-                img = resize_image(image=img,size=img_orig.shape[:2])
-                img = blend * img + (1.0 - blend) * img_orig
-            img = self.render_image(img,iter_n, step, pad, tile_size)
+                img = resize_image(image=img,size=img_orig.size)
+                img = ImageChops.blend(img, img_orig, blend)
+            img = to_pil(self.render_image(to_tensor(img,self.device),sigma,iter_n, step, pad, tile_size))
+            plt.imshow(img)
+            plt.show()
         return img
