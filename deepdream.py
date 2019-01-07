@@ -141,7 +141,7 @@ class DeepDream():
         return grad/(grad.std()+1e-8)
 
 
-    def render_image(self, image_tensor, sigma, iter_n=10, step=0.05, pad=10, tile_size=400,show_gradient=False,show_images=False):
+    def render_image(self, image, sigma, iter_n=10, step=0.05, pad=10, tile_size=400,show_gradient=False,show_images=False):
         """
         Use gradient ascent to optimize an image so it maximizes the
         mean value of the given layer_tensor.
@@ -154,7 +154,7 @@ class DeepDream():
         show_gradient: Plot the gradient in each iteration.
         """
         # Copy the image so we don't overwrite the original image.
-        # image_tensor = to_tensor(image, self.device)
+        image_tensor = image.clone().detach()
         print("Processing image: ", end="")
         for i in range(iter_n):
             # Calculate the value of the gradient.
